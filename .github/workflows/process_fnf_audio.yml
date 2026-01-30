@@ -1,82 +1,104 @@
-- name: 进行人声分离 (使用UVR)
-  run: |
-    cd uvr
-    echo “正在查找并处理音频文件...”
+name: Process FNF Audio
 
-    # 查找音频文件，支持常见格式
-    INPUT_FILE=$(find ../raw_audio -type f \( -iname "*.mp3" -o -iname "*.wav" -o -iname "*.flac" -o -iname "*.ogg" \) | head -n 1)
-    if [ -z "$INPUT_FILE" ]; then
-      echo “错误：在 ‘raw_audio/’ 目录下未找到支持的音频文件 (.mp3, .wav, .flac, .ogg)。”
-      exit 1
-    fi
-    echo “处理文件：$INPUT_FILE”
+on:
+  # 手动触发工作流
+  workflow_dispatch:
 
-    # 创建输出目录
-    mkdir -p ../separated
+jobs:
+  separate-audio:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
-    # 重要：使用Demucs命令行接口进行分离，模型为 mdx_q
-    python -m demucs.separate -n mdx_q --two-stems=vocals -o ../separated "$INPUT_FILE"
+    steps:
+      # 第一步：准备环境和代码
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    echo “分离完成。”
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
 
-- name: 转换为OGG格式并重命名
-  run: |
-    # 安装ffmpeg
-    sudo apt-get update && sudo apt-get install -y ffmpeg
+      # 第二步：安装核心依赖（关键修正）
+      - name: Install Demucs & FFmpeg
+        run: |
+          pip install demucs
+          sudo apt-get update && sudo apt-get install -y ffmpeg
 
-    # 进入分离输出目录。根据上一步使用的模型（mdx_q）和文件结构寻找文件。
-    MODEL_OUT_DIR="separated/mdx_q"
-    SONG_DIR=$(find "$MODEL_OUT_DIR" -maxdepth 1 -type d ! -path "$MODEL_OUT_DIR" | head -n 1)
+      # 第三步：进行人声分离
+      - name: Separate Vocals (Demucs)
+        id: separate
+        run: |
+          echo "Looking for audio files..."
 
-    if [ -z "$SONG_DIR" ] || [ ! -d "$SONG_DIR" ]; then
-      echo “错误：找不到分离后的音频文件目录。”
-      exit 1
-    fi
+          # 查找 raw_audio 目录下的音频文件
+          INPUT_FILE=$(find ./raw_audio -type f \( -iname "*.mp3" -o -iname "*.wav" -o -iname "*.flac" \) | head -n 1)
+          if [ -z "$INPUT_FILE" ]; then
+            echo "ERROR: No supported audio file (.mp3, .wav, .flac) found in 'raw_audio/' directory."
+            exit 1
+          fi
+          echo "Processing file: $INPUT_FILE"
 
-    echo “在目录中找到文件：$SONG_DIR”
+          # 使用 Demucs 进行分离
+          python -m demucs.separate -n mdx_q --two-stems=vocals -o ./separated "$INPUT_FILE"
 
-    # 转换并重命名：其他轨 -> Inst.ogg, 人声轨 -> Voices.ogg
-    if [ -f "$SONG_DIR/other.wav" ]; then
-      ffmpeg -i "$SONG_DIR/other.wav" -c:a libvorbis -q:a 6 "Inst.ogg" -y -hide_banner -loglevel error
-      echo “✅ 已生成 Inst.ogg (伴奏)”
-    else
-      echo “警告：未找到伴奏文件 (other.wav)”
-    fi
+          # 验证输出目录
+          MODEL_OUT_DIR="./separated/mdx_q"
+          if [ -d "$MODEL_OUT_DIR" ]; then
+            SONG_DIR=$(find "$MODEL_OUT_DIR" -maxdepth 1 -type d ! -path "$MODEL_OUT_DIR" | head -n 1)
+            if [ -n "$SONG_DIR" ]; then
+              echo "Separation successful. Files in: $SONG_DIR"
+              echo "song_dir=$SONG_DIR" >> $GITHUB_OUTPUT
+            else
+              echo "ERROR: Could not find song subdirectory in model output."
+              exit 1
+            fi
+          else
+            echo "ERROR: Model output directory '$MODEL_OUT_DIR' was not created."
+            exit 1
+          fi
 
-    if [ -f "$SONG_DIR/vocals.wav" ]; then
-      ffmpeg -i "$SONG_DIR/vocals.wav" -c:a libvorbis -q:a 6 "Voices.ogg" -y -hide_banner -loglevel error
-      echo “✅ 已生成 Voices.ogg (人声)”
-    else
-      echo “警告：未找到人声文件 (vocals.wav)”
-    fi
+      # 第四步：转换为OGG格式
+      - name: Convert to OGG
+        run: |
+          SONG_DIR="${{ steps.separate.outputs.song_dir }}"
+          echo "Converting files from: $SONG_DIR"
 
-- name: 打包并上传成品文件
-  run: |
-    # 创建成品zip包，如果两个文件都存在就都打包，如果只有一个就打包一个
-    if [ -f "Inst.ogg" ] && [ -f "Voices.ogg" ]; then
-      zip -j fnf_audio_output.zip Inst.ogg Voices.ogg
-      echo “已打包 Inst.ogg 和 Voices.ogg”
-    elif [ -f "Inst.ogg" ]; then
-      zip -j fnf_audio_output.zip Inst.ogg
-      echo “已打包 Inst.ogg”
-    else
-      echo “错误：未生成任何有效的.ogg文件。”
-      exit 1
-    fi
+          # 转换伴奏轨 (other.wav -> Inst.ogg)
+          if [ -f "$SONG_DIR/other.wav" ]; then
+            ffmpeg -i "$SONG_DIR/other.wav" -c:a libvorbis -q:a 6 "Inst.ogg" -y -hide_banner -loglevel error
+            echo "✅ Generated Inst.ogg (Instrumental)"
+          else
+            echo "ERROR: Could not find 'other.wav' (instrumental track)."
+            exit 1
+          fi
 
-    # 将成品作为此次工作流的“制品”供下载
-    mkdir -p artifact
-    mv fnf_audio_output.zip artifact/
+          # 转换人声轨 (vocals.wav -> Voices.ogg)
+          if [ -f "$SONG_DIR/vocals.wav" ]; then
+            ffmpeg -i "$SONG_DIR/vocals.wav" -c:a libvorbis -q:a 6 "Voices.ogg" -y -hide_banner -loglevel error
+            echo "✅ Generated Voices.ogg (Vocals)"
+          else
+            echo "ERROR: Could not find 'vocals.wav' (vocal track)."
+            exit 1
+          fi
 
-- name: 上传工作流制品
-  uses: actions/upload-artifact@v4
-  with:
-    name: FNF-Audio-Output
-    path: artifact/
-    if-no-files-found: error
+      # 第五步：打包和上传结果
+      - name: Package Results
+        run: |
+          zip -j fnf_audio_output.zip Inst.ogg Voices.ogg
+          echo "Created fnf_audio_output.zip"
 
-- name: 显示完成信息
-  run: |
-    echo “✅ 音频处理完成！”
-    echo “请在右侧 ‘Summary’ 页面或此工作流运行完毕后的 ‘Artifacts’ 区域下载 ‘FNF-Audio-Output.zip’。”
-    echo “压缩包内包含可直接用于Psych引擎的音频文件。”
+      - name: Upload Audio Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FNF-Audio-Pack
+          path: fnf_audio_output.zip
+          if-no-files-found: error
+
+      # 第六步：完成提示
+      - name: Completion Notice
+        run: |
+          echo "🎉 Audio processing completed successfully!"
+          echo "Download the 'FNF-Audio-Pack.zip' from the 'Artifacts' section."
+          echo "It contains 'Inst.ogg' and 'Voices.ogg' ready for your Psych Engine mod."
