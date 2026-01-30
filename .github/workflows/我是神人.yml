@@ -1,0 +1,24 @@
+name: 重复宣言
+
+on:
+  # 手动触发
+  workflow_dispatch:
+  # 你也可以设置为定时触发，例如每天UTC时间12点运行一次
+  # schedule:
+  #   - cron: '0 12 * * *'
+
+jobs:
+  say-it:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 开始重复宣言
+        run: |
+          echo "👇 准备开始..."
+          # 设置重复次数
+          COUNT=10
+          # 循环输出
+          for i in $(seq 1 $COUNT); do
+            echo "第 $i 次：我是神人！"
+            sleep 1 # 每次间隔1秒，方便观察
+          done
+          echo "🎯 宣言完毕！"
