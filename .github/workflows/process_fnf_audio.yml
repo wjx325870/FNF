@@ -33,7 +33,7 @@ jobs:
           echo "Looking for audio files..."
 
           # 查找 raw_audio 目录下的音频文件
-          INPUT_FILE=$(find ./raw_audio -type f \( -iname "*.mp3" -o -iname "*.wav" -o -iname "*.flac" \) | head -n 1)
+          INPUT_FILE=$(find ./raw_audio -type f \( -iname "*.mp3" -o -iname "*.wav" -o -iname "*.flac" -o -iname "*.ogg" \) | head -n 1)
           if [ -z "$INPUT_FILE" ]; then
             echo "ERROR: No supported audio file (.mp3, .wav, .flac) found in 'raw_audio/' directory."
             exit 1
