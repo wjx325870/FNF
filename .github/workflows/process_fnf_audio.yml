@@ -19,45 +19,58 @@ jobs:
         with:
           python-version: '3.10'
 
-      # 2. 安装所有必需依赖（关键修复点）
-      - name: 安装音频处理依赖
+      # 2. 安装所有必需的依赖包（关键：一次性全部安装）
+      - name: 安装所有音频处理依赖
         run: |
-          pip install demucs diffq # 必须同时安装 demucs 和 diffq
+          # 更新pip并安装核心包
+          pip install --upgrade pip
+          # Demucs核心及其所有辅助库
+          pip install demucs
+          pip install diffq                     # 解决之前DiffQ错误
+          pip install torchcodec                # 解决当前torchcodec错误
+          # 确保音频文件读写支持的库
+          pip install librosa soundfile
+          # 可选：确保torchaudio稳定，避免解码问题
+          pip install --upgrade torchaudio
+          # 安装系统级的FFmpeg用于音频转换
           sudo apt-get update && sudo apt-get install -y ffmpeg
+          echo "✅ 所有依赖安装完成。"
 
-      # 3. 执行人声分离 (Demucs)
+      # 3. 执行人声分离
       - name: 分离人声与伴奏
         id: separate
         run: |
           echo "正在查找音频文件..."
-          # 支持 .mp3, .wav, .flac, .ogg 格式
-          INPUT_FILE=$(find ./raw_audio -type f \( -iname "*.mp3" -o -iname "*.wav" -o -iname "*.flac" -o -iname "*.ogg" \) | head -n 1)
+          # 支持所有常见音频格式
+          INPUT_FILE=$(find ./raw_audio -type f \( -iname "*.mp3" -o -iname "*.wav" -o -iname "*.flac" -o -iname "*.ogg" -o -iname "*.m4a" \) | head -n 1)
           if [ -z "$INPUT_FILE" ]; then
-            echo "错误：在 'raw_audio/' 目录中未找到支持的音频文件 (.mp3, .wav, .flac, .ogg)。"
+            echo "❌ 错误：在 'raw_audio/' 目录中未找到支持的音频文件。"
+            echo "请确保文件格式为 .mp3, .wav, .flac, .ogg 或 .m4a。"
             exit 1
           fi
           echo "开始处理文件: $INPUT_FILE"
 
-          # 使用Demucs进行分离，输出到 ./separated 目录
+          # 使用Demucs进行分离，模型为 mdx_q
+          echo "正在启动AI分离进程，这可能需要几分钟..."
           python -m demucs.separate -n mdx_q --two-stems=vocals -o ./separated "$INPUT_FILE"
 
-          # 验证输出路径，供下一步使用
+          # 验证输出路径
           MODEL_OUT_DIR="./separated/mdx_q"
           if [ -d "$MODEL_OUT_DIR" ]; then
             SONG_DIR=$(find "$MODEL_OUT_DIR" -maxdepth 1 -type d ! -path "$MODEL_OUT_DIR" | head -n 1)
             if [ -n "$SONG_DIR" ]; then
-              echo "分离成功！文件位于: $SONG_DIR"
-              echo "song_dir=$SONG_DIR" >> $GITHUB_OUTPUT # 设置输出变量
+              echo "✅ 分离成功！文件位于: $SONG_DIR"
+              echo "song_dir=$SONG_DIR" >> $GITHUB_OUTPUT
             else
-              echo "错误：在模型输出目录中未找到歌曲子目录。"
+              echo "❌ 错误：在模型输出目录中未找到歌曲子目录。"
               exit 1
             fi
           else
-            echo "错误：模型输出目录 '$MODEL_OUT_DIR' 未生成。"
+            echo "❌ 错误：模型输出目录 '$MODEL_OUT_DIR' 未生成，分离过程可能失败。"
             exit 1
           fi
 
-      # 4. 转换为FNF标准格式 (.ogg)
+      # 4. 转换为FNF标准OGG格式
       - name: 转换为OGG格式
         run: |
           SONG_DIR="${{ steps.separate.outputs.song_dir }}"
@@ -68,7 +81,7 @@ jobs:
             ffmpeg -i "$SONG_DIR/other.wav" -c:a libvorbis -q:a 6 "Inst.ogg" -y -hide_banner -loglevel error
             echo "✅ 已生成 Inst.ogg (伴奏)"
           else
-            echo "错误：未找到伴奏文件 'other.wav'。"
+            echo "❌ 错误：未找到伴奏文件 'other.wav'。"
             exit 1
           fi
 
@@ -77,15 +90,21 @@ jobs:
             ffmpeg -i "$SONG_DIR/vocals.wav" -c:a libvorbis -q:a 6 "Voices.ogg" -y -hide_banner -loglevel error
             echo "✅ 已生成 Voices.ogg (人声)"
           else
-            echo "错误：未找到人声文件 'vocals.wav'。"
+            echo "❌ 错误：未找到人声文件 'vocals.wav'。"
             exit 1
           fi
 
       # 5. 打包结果
       - name: 打包音频文件
         run: |
-          zip -j fnf_audio_output.zip Inst.ogg Voices.ogg
-          echo "已创建压缩包: fnf_audio_output.zip"
+          # 检查文件是否存在并打包
+          if [ -f "Inst.ogg" ] && [ -f "Voices.ogg" ]; then
+            zip -j fnf_audio_output.zip Inst.ogg Voices.ogg
+            echo "✅ 已创建压缩包: fnf_audio_output.zip"
+          else
+            echo "❌ 错误：无法找到要打包的.ogg文件。"
+            exit 1
+          fi
 
       # 6. 上传产物
       - name: 上传成品
@@ -94,10 +113,17 @@ jobs:
           name: FNF-Audio-Output
           path: fnf_audio_output.zip
           if-no-files-found: error
+          retention-days: 7
 
       # 7. 完成提示
       - name: 完成通知
         run: |
-          echo "🎉 音频处理全部完成！"
+          echo ""
+          echo "🎉🎉🎉 音频处理全部完成！"
+          echo "========================================"
           echo "请在右侧的 'Artifacts' 区域下载 'FNF-Audio-Output.zip'。"
-          echo "该压缩包内包含 'Inst.ogg' 和 'Voices.ogg'，可直接用于 Psych Engine 模组。"
+          echo "该压缩包内包含:"
+          echo "  • Inst.ogg    (纯净伴奏)"
+          echo "  • Voices.ogg  (分离的人声)"
+          echo "========================================"
+          echo "它们已可直接复制到你的 Psych Engine 模组中使用。"
